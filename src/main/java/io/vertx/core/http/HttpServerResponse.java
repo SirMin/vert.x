@@ -11,11 +11,7 @@
 
 package io.vertx.core.http;
 
-import io.vertx.codegen.annotations.CacheReturn;
-import io.vertx.codegen.annotations.Fluent;
-import io.vertx.codegen.annotations.GenIgnore;
-import io.vertx.codegen.annotations.Nullable;
-import io.vertx.codegen.annotations.VertxGen;
+import io.vertx.codegen.annotations.*;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
@@ -129,19 +125,22 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
   /**
    * Like {@link #putHeader(String, String)} but using CharSequence
    */
-  @GenIgnore
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  @Fluent
   HttpServerResponse putHeader(CharSequence name, CharSequence value);
 
   /**
    * Like {@link #putHeader(String, String)} but providing multiple values via a String Iterable
    */
-  @GenIgnore
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  @Fluent
   HttpServerResponse putHeader(String name, Iterable<String> values);
 
   /**
    * Like {@link #putHeader(String, Iterable)} but with CharSequence Iterable
    */
-  @GenIgnore
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  @Fluent
   HttpServerResponse putHeader(CharSequence name, Iterable<CharSequence> values);
 
   /**
@@ -163,19 +162,22 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
   /**
    * Like {@link #putTrailer(String, String)} but using CharSequence
    */
-  @GenIgnore
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  @Fluent
   HttpServerResponse putTrailer(CharSequence name, CharSequence value);
 
   /**
    * Like {@link #putTrailer(String, String)} but providing multiple values via a String Iterable
    */
-  @GenIgnore
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  @Fluent
   HttpServerResponse putTrailer(String name, Iterable<String> values);
 
   /**
    * Like {@link #putTrailer(String, Iterable)} but with CharSequence Iterable
    */
-  @GenIgnore
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  @Fluent
   HttpServerResponse putTrailer(CharSequence name, Iterable<CharSequence> value);
 
   /**
@@ -294,7 +296,7 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
    *
    * @param filename  path to the file to serve
    * @param offset offset to start serving from
-   * @param length length to serve to
+   * @param length the number of bytes to send
    * @return a reference to this, so the API can be used fluently
    */
   @Fluent
@@ -395,11 +397,13 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
   /**
    * Like {@link #push(HttpMethod, String, String, MultiMap, Handler)} with no headers.
    */
+  @Fluent
   HttpServerResponse push(HttpMethod method, String host, String path, Handler<AsyncResult<HttpServerResponse>> handler);
 
   /**
    * Like {@link #push(HttpMethod, String, String, MultiMap, Handler)} with the host copied from the current request.
    */
+  @Fluent
   HttpServerResponse push(HttpMethod method, String path, MultiMap headers, Handler<AsyncResult<HttpServerResponse>> handler);
 
   /**

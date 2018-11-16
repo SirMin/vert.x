@@ -12,13 +12,12 @@
 package io.vertx.core.net.impl;
 
 import io.netty.bootstrap.ServerBootstrap;
-import io.netty.channel.Channel;
-import io.netty.channel.ChannelInitializer;
-import io.netty.channel.ChannelPipeline;
+import io.netty.channel.*;
 import io.netty.channel.group.ChannelGroup;
 import io.netty.channel.group.ChannelGroupFuture;
 import io.netty.channel.group.DefaultChannelGroup;
 import io.netty.handler.logging.LoggingHandler;
+import io.netty.handler.ssl.SniHandler;
 import io.netty.handler.ssl.SslHandler;
 import io.netty.handler.stream.ChunkedWriteHandler;
 import io.netty.handler.timeout.IdleStateHandler;
@@ -66,7 +65,7 @@ public class NetServerImpl implements Closeable, MetricsProvider, NetServer {
   private final HandlerManager<Handlers> handlerManager = new HandlerManager<>(availableWorkers);
   private final NetSocketStream connectStream = new NetSocketStream();
   private ChannelGroup serverChannelGroup;
-  private boolean paused;
+  private long demand = Long.MAX_VALUE;
   private volatile boolean listening;
   private Handler<NetSocket> registeredHandler;
   private volatile ServerID id;
@@ -93,16 +92,29 @@ public class NetServerImpl implements Closeable, MetricsProvider, NetServer {
     }
   }
 
-  protected synchronized void pauseAccepting() {
-    paused = true;
+  private synchronized void pauseAccepting() {
+    demand = 0L;
   }
 
-  protected synchronized void resumeAccepting() {
-    paused = false;
+  private synchronized void resumeAccepting() {
+    demand = Long.MAX_VALUE;
   }
 
-  protected synchronized boolean isPaused() {
-    return paused;
+  private synchronized void fetchAccepting(long amount) {
+    if (amount > 0L) {
+      demand += amount;
+      if (demand < 0L) {
+        demand = Long.MAX_VALUE;
+      }
+    }
+  }
+
+  protected synchronized boolean accept() {
+    boolean accept = demand > 0L;
+    if (accept && demand != Long.MAX_VALUE) {
+      demand--;
+    }
+    return accept;
   }
 
   protected boolean isListening() {
@@ -172,37 +184,34 @@ public class NetServerImpl implements Closeable, MetricsProvider, NetServer {
         bootstrap.childHandler(new ChannelInitializer<Channel>() {
           @Override
           protected void initChannel(Channel ch) throws Exception {
-            if (isPaused()) {
+            if (!accept()) {
               ch.close();
               return;
             }
             HandlerHolder<Handlers> handler = handlerManager.chooseHandler(ch.eventLoop());
             if (handler != null) {
               if (sslHelper.isSSL()) {
-                io.netty.util.concurrent.Future<Channel> handshakeFuture;
-                if (options.isSni()) {
-                  VertxSniHandler sniHandler = new VertxSniHandler(sslHelper, vertx);
-                  handshakeFuture = sniHandler.handshakeFuture();
-                  ch.pipeline().addFirst("ssl", sniHandler);
-                } else {
-                  SslHandler sslHandler = new SslHandler(sslHelper.createEngine(vertx));
-                  handshakeFuture = sslHandler.handshakeFuture();
-                  ch.pipeline().addFirst("ssl", sslHandler);
-                }
-                handshakeFuture.addListener(future -> {
-                  if (future.isSuccess()) {
+                ch.pipeline().addFirst("handshaker", new SslHandshakeCompletionHandler(ar -> {
+                  if (ar.succeeded()) {
                     connected(handler, ch);
                   } else {
                     Handler<Throwable> exceptionHandler = handler.handler.exceptionHandler;
                     if (exceptionHandler != null) {
                       handler.context.executeFromIO(v -> {
-                        exceptionHandler.handle(future.cause());
+                        exceptionHandler.handle(ar.cause());
                       });
                     } else {
-                      log.error("Client from origin " + ch.remoteAddress() + " failed to connect over ssl: " + future.cause());
+                      log.error("Client from origin " + ch.remoteAddress() + " failed to connect over ssl: " + ar.cause());
                     }
                   }
-                });
+                }));
+                if (options.isSni()) {
+                  SniHandler sniHandler = new SniHandler(sslHelper.serverNameMapper(vertx));
+                  ch.pipeline().addFirst("ssl", sniHandler);
+                } else {
+                  SslHandler sslHandler = new SslHandler(sslHelper.createEngine(vertx));
+                  ch.pipeline().addFirst("ssl", sslHandler);
+                }
               } else {
                 connected(handler, ch);
               }
@@ -210,7 +219,7 @@ public class NetServerImpl implements Closeable, MetricsProvider, NetServer {
           }
         });
 
-        applyConnectionOptions(bootstrap);
+        applyConnectionOptions(socketAddress.path() != null, bootstrap);
 
         handlerManager.addHandler(new Handlers(handler, exceptionHandler), listenContext);
 
@@ -434,12 +443,7 @@ public class NetServerImpl implements Closeable, MetricsProvider, NetServer {
   private void connected(HandlerHolder<Handlers> handler, Channel ch) {
     NetServerImpl.this.initChannel(ch.pipeline());
 
-    VertxNetHandler nh = new VertxNetHandler(ctx -> new NetSocketImpl(vertx, ctx, handler.context, sslHelper, metrics)) {
-      @Override
-      protected void handleMessage(NetSocketImpl connection, Object msg) {
-        connection.handleMessageReceived(msg);
-      }
-    };
+    VertxHandler<NetSocketImpl> nh = VertxHandler.<NetSocketImpl>create(handler.context, ctx -> new NetSocketImpl(vertx, ctx, handler.context, sslHelper, metrics));
     nh.addHandler(conn -> socketMap.put(ch, conn));
     nh.removeHandler(conn -> socketMap.remove(ch));
     ch.pipeline().addLast("handler", nh);
@@ -463,10 +467,11 @@ public class NetServerImpl implements Closeable, MetricsProvider, NetServer {
   /**
    * Apply the connection option to the server.
    *
+   * @param domainSocket whether it's a domain socket server
    * @param bootstrap the Netty server bootstrap
    */
-  protected void applyConnectionOptions(ServerBootstrap bootstrap) {
-    vertx.transport().configure(options, bootstrap);
+  private void applyConnectionOptions(boolean domainSocket, ServerBootstrap bootstrap) {
+    vertx.transport().configure(options, domainSocket, bootstrap);
   }
 
   @Override
@@ -485,6 +490,8 @@ public class NetServerImpl implements Closeable, MetricsProvider, NetServer {
         */
   private class NetSocketStream implements ReadStream<NetSocket> {
 
+
+
     @Override
     public NetSocketStream handler(Handler<NetSocket> handler) {
       connectHandler(handler);
@@ -500,6 +507,12 @@ public class NetServerImpl implements Closeable, MetricsProvider, NetServer {
     @Override
     public NetSocketStream resume() {
       resumeAccepting();
+      return this;
+    }
+
+    @Override
+    public ReadStream<NetSocket> fetch(long amount) {
+      fetchAccepting(amount);
       return this;
     }
 

@@ -100,7 +100,7 @@ public class CoreExamples {
 
     // 2 minutes
     long maxExecuteTime = 2;
-    TimeUnit maxExecuteTimeUnit = TimeUnit.SECONDS;
+    TimeUnit maxExecuteTimeUnit = TimeUnit.MINUTES;
 
     WorkerExecutor executor = vertx.createSharedWorkerExecutor("my-worker-pool", poolSize, maxExecuteTime, maxExecuteTimeUnit);
   }
@@ -185,6 +185,26 @@ public class CoreExamples {
   public void example7_1(Vertx vertx) {
     DeploymentOptions options = new DeploymentOptions().setWorker(true);
     vertx.deployVerticle("com.mycompany.MyOrderProcessorVerticle", options);
+  }
+
+  public void multiThreadedWorkerVerticleAlternative(Vertx vertx) {
+    DeploymentOptions options = new DeploymentOptions()
+      .setWorker(true)
+      .setInstances(5) // matches the worker pool size below
+      .setWorkerPoolName("the-specific-pool")
+      .setWorkerPoolSize(5);
+    vertx.deployVerticle("com.mycompany.MyOrderProcessorVerticle", options);
+  }
+
+  public void multiThreadedWorkerVerticleAlternative2(Vertx vertx, String someresult) {
+    vertx.eventBus().consumer("foo", msg -> {
+      vertx.executeBlocking(fut -> {
+        // Invoke blocking code with received message data
+        fut.complete(someresult);
+      }, false, ar -> { // ordered == false
+        // Handle result, e.g. reply to the message
+      });
+    });
   }
 
   public void example8(Vertx vertx) {

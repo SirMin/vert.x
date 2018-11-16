@@ -11,13 +11,9 @@
 
 package io.vertx.core.net;
 
-import io.vertx.codegen.annotations.GenIgnore;
-import io.vertx.codegen.annotations.Nullable;
+import io.vertx.codegen.annotations.*;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Handler;
-import io.vertx.codegen.annotations.CacheReturn;
-import io.vertx.codegen.annotations.Fluent;
-import io.vertx.codegen.annotations.VertxGen;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.streams.ReadStream;
 import io.vertx.core.streams.WriteStream;
@@ -53,6 +49,9 @@ public interface NetSocket extends ReadStream<Buffer>, WriteStream<Buffer> {
 
   @Override
   NetSocket resume();
+
+  @Override
+  NetSocket fetch(long amount);
 
   @Override
   NetSocket endHandler(Handler<Void> endHandler);
@@ -96,6 +95,13 @@ public interface NetSocket extends ReadStream<Buffer>, WriteStream<Buffer> {
    */
   @Fluent
   NetSocket write(String str, String enc);
+
+  /**
+   * Like {@link #write(Object)} but with an {@code handler} called when the message has been written
+   * or failed to be written.
+   */
+  @Fluent
+  NetSocket write(Buffer message, Handler<AsyncResult<Void>> handler);
 
   /**
    * Tell the operating system to stream a file as specified by {@code filename} directly from disk to the outgoing connection,
@@ -235,7 +241,7 @@ public interface NetSocket extends ReadStream<Buffer>, WriteStream<Buffer> {
    *         not SSL.
    * @see javax.net.ssl.SSLSession
    */
-  @GenIgnore
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
   SSLSession sslSession();
 
   /**

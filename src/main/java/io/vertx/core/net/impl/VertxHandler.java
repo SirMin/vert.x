@@ -11,10 +11,7 @@
 
 package io.vertx.core.net.impl;
 
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.ByteBufAllocator;
-import io.netty.buffer.CompositeByteBuf;
-import io.netty.buffer.Unpooled;
+import io.netty.buffer.*;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandlerContext;
@@ -23,32 +20,88 @@ import io.netty.handler.timeout.IdleStateEvent;
 import io.vertx.core.Handler;
 import io.vertx.core.impl.ContextInternal;
 
+import java.util.function.Function;
+
 /**
  * @author <a href="mailto:nmaurer@redhat.com">Norman Maurer</a>
  */
-public abstract class   VertxHandler<C extends ConnectionBase> extends ChannelDuplexHandler {
+public final class VertxHandler<C extends ConnectionBase> extends ChannelDuplexHandler {
 
+  public static ByteBuf safeBuffer(ByteBufHolder holder, ByteBufAllocator allocator) {
+    return safeBuffer(holder.content(), allocator);
+  }
+
+  public static ByteBuf safeBuffer(ByteBuf buf, ByteBufAllocator allocator) {
+    if (buf == Unpooled.EMPTY_BUFFER) {
+      return buf;
+    }
+    if (buf.isDirect() || buf instanceof CompositeByteBuf) {
+      try {
+        if (buf.isReadable()) {
+          ByteBuf buffer =  allocator.heapBuffer(buf.readableBytes());
+          buffer.writeBytes(buf);
+          return buffer;
+        } else {
+          return Unpooled.EMPTY_BUFFER;
+        }
+      } finally {
+        buf.release();
+      }
+    }
+    return buf;
+  }
+
+  private static final Handler<Object> NULL_HANDLER = m -> { };
+
+  public static <C extends ConnectionBase> VertxHandler<C> create(C connection) {
+    return create(connection.context, ctx -> connection);
+  }
+
+  public static <C extends ConnectionBase> VertxHandler<C> create(ContextInternal context, Function<ChannelHandlerContext, C> connectionFactory) {
+    return new VertxHandler<>(context, connectionFactory);
+  }
+
+  private final Function<ChannelHandlerContext, C> connectionFactory;
+  private final ContextInternal context;
   private C conn;
   private Handler<Void> endReadAndFlush;
   private Handler<C> addHandler;
   private Handler<C> removeHandler;
   private Handler<Object> messageHandler;
 
+  private VertxHandler(ContextInternal context, Function<ChannelHandlerContext, C> connectionFactory) {
+    this.context = context;
+    this.connectionFactory = connectionFactory;
+  }
+
   /**
-   * Set the connection, this is usually called by subclasses when the channel is added to the pipeline.
+   * Set the connection, this is called when the channel is added to the pipeline.
    *
    * @param connection the connection
    */
-  protected void setConnection(C connection) {
+  private void setConnection(C connection) {
     conn = connection;
     endReadAndFlush = v -> conn.endReadAndFlush();
+    messageHandler = ((ConnectionBase)conn)::handleRead; // Dubious cast to make compiler happy
     if (addHandler != null) {
       addHandler.handle(connection);
     }
-    messageHandler = m -> {
-      conn.startRead();
-      handleMessage(conn, m);
-    };
+  }
+
+  /**
+   * Fail the connection, the {@code error} will be sent to the pipeline and the connection will
+   * stop processing any further message.
+   *
+   * @param error the {@code Throwable} to propagate
+   */
+  void fail(Throwable error) {
+    messageHandler = NULL_HANDLER;
+    conn.chctx.pipeline().fireExceptionCaught(error);
+  }
+
+  @Override
+  public void handlerAdded(ChannelHandlerContext ctx) throws Exception {
+    setConnection(connectionFactory.apply(ctx));
   }
 
   /**
@@ -77,30 +130,9 @@ public abstract class   VertxHandler<C extends ConnectionBase> extends ChannelDu
     return conn;
   }
 
-  public static ByteBuf safeBuffer(ByteBuf buf, ByteBufAllocator allocator) {
-    if (buf == Unpooled.EMPTY_BUFFER) {
-      return buf;
-    }
-    if (buf.isDirect() || buf instanceof CompositeByteBuf) {
-      try {
-        if (buf.isReadable()) {
-          ByteBuf buffer =  allocator.heapBuffer(buf.readableBytes());
-          buffer.writeBytes(buf);
-          return buffer;
-        } else {
-          return Unpooled.EMPTY_BUFFER;
-        }
-      } finally {
-        buf.release();
-      }
-    }
-    return buf;
-  }
-
   @Override
   public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
     C conn = getConnection();
-    ContextInternal context = conn.getContext();
     context.executeFromIO(v -> conn.handleInterestedOpsChanged());
   }
 
@@ -110,7 +142,6 @@ public abstract class   VertxHandler<C extends ConnectionBase> extends ChannelDu
     // Don't remove the connection at this point, or the handleClosed won't be called when channelInactive is called!
     C connection = getConnection();
     if (connection != null) {
-      ContextInternal context = conn.getContext();
       context.executeFromIO(v -> {
         try {
           if (ch.isOpen()) {
@@ -130,21 +161,17 @@ public abstract class   VertxHandler<C extends ConnectionBase> extends ChannelDu
     if (removeHandler != null) {
       removeHandler.handle(conn);
     }
-    ContextInternal context = conn.getContext();
     context.executeFromIO(v -> conn.handleClosed());
   }
 
   @Override
   public void channelReadComplete(ChannelHandlerContext ctx) throws Exception {
-    ContextInternal context = conn.getContext();
     context.executeFromIO(endReadAndFlush);
   }
 
   @Override
   public void channelRead(ChannelHandlerContext chctx, Object msg) throws Exception {
-    Object message = decode(msg, chctx.alloc());
-    ContextInternal ctx = conn.getContext();
-    ctx.executeFromIO(message, messageHandler);
+    context.executeFromIO(msg, messageHandler);
   }
 
   @Override
@@ -154,14 +181,4 @@ public abstract class   VertxHandler<C extends ConnectionBase> extends ChannelDu
     }
     ctx.fireUserEventTriggered(evt);
   }
-
-  protected abstract void handleMessage(C connection, Object msg);
-
-  /**
-   * Decode the message before passing it to the channel
-   *
-   * @param msg the message to decode
-   * @return the decoded message
-   */
-  protected abstract Object decode(Object msg, ByteBufAllocator allocator) throws Exception;
 }
